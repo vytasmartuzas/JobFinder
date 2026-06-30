@@ -17,6 +17,13 @@ __pycache__/
 data/
 generated/
 
+# Personal CV data / source documents (PII) — keep local.
+# The anonymized cv/example_cv.json IS committed to document the schema.
+cv/*.json
+!cv/example_cv.json
+cv/*.pdf
+*_CV_*.pdf
+
 # OS / editor
 .DS_Store
 Thumbs.db

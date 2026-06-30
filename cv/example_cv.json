@@ -1,0 +1,72 @@
+{
+  "name": "ALEX EXAMPLE",
+  "contact_lines": [
+    "00000 000000 | alex.example@email.com | linkedin.com/in/alex-example | github.com/alexexample",
+    "Anytown, UK | Full UK Driving Licence | English · Spanish"
+  ],
+  "summary": "Final-year Computer Science student with hands-on experience across software development and cloud platforms. Proven ability to deliver full-stack applications and collaborate in agile teams. Eager to contribute across the full Software Development Life Cycle.",
+  "education": [
+    {
+      "institution": "Example University, Anytown",
+      "dates": "2022 – 2026 (Expected)",
+      "degree": "BSc (Hons) Computer Science",
+      "modules": [
+        "Advanced Programming",
+        "Databases and Systems",
+        "Software Engineering"
+      ],
+      "projects": [
+        "Final Year Project – Task Manager: Full-stack web app using React, Node.js, and PostgreSQL with JWT authentication and a REST API.",
+        "Group Project – Sensor Dashboard: Real-time monitoring dashboard built with Python and Flask, deployed on a Raspberry Pi."
+      ]
+    }
+  ],
+  "certifications": [
+    {
+      "title": "Cloud Practitioner – Example Cloud Academy",
+      "date": "2025",
+      "bullets": [
+        "Fundamentals of cloud computing and deployment"
+      ]
+    }
+  ],
+  "skills": [
+    {
+      "category": "Languages",
+      "items": "Python, JavaScript, SQL"
+    },
+    {
+      "category": "Frameworks & Platforms",
+      "items": "React, Node.js, Flask"
+    },
+    {
+      "category": "Databases",
+      "items": "PostgreSQL, SQLite"
+    },
+    {
+      "category": "Tools & Methodology",
+      "items": "Git, Docker, Agile (Scrum), unit and integration testing"
+    }
+  ],
+  "experience": [
+    {
+      "organization": "Example Tech Ltd",
+      "dates": "Jun 2023 – Sep 2023",
+      "role": "Software Engineering Intern",
+      "bullets": [
+        "Built internal tooling that reduced manual reporting time by 40%",
+        "Collaborated with the backend team on REST API improvements",
+        "Wrote unit tests and documentation for new features"
+      ]
+    },
+    {
+      "organization": "Anytown Retail Co",
+      "dates": "Sep 2021 – May 2023",
+      "role": "Customer Assistant",
+      "bullets": [
+        "Provided front-line customer support during busy periods",
+        "Trained two new team members on store systems"
+      ]
+    }
+  ]
+}

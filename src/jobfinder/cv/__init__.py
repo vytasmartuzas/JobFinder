@@ -1,0 +1,24 @@
+"""CV model and rendering.
+
+A CV is split into a fixed *template* (the layout, in ``render.py``) and *structured
+content* (the data, modeled in ``content.py``). Per-application tailoring later rewrites
+only the content within a validated schema, so the rendered layout never changes.
+"""
+
+from .content import (
+    CVContent,
+    CertEntry,
+    EducationEntry,
+    ExperienceEntry,
+    SkillRow,
+)
+from .render import render_cv_pdf
+
+__all__ = [
+    "CVContent",
+    "CertEntry",
+    "EducationEntry",
+    "ExperienceEntry",
+    "SkillRow",
+    "render_cv_pdf",
+]
