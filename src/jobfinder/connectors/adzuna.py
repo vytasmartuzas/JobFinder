@@ -22,6 +22,13 @@ from .base import Connector
 
 _URL = "https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
 
+# The country is already selected by the URL path, so passing the country name as the
+# `where` filter geocodes to nothing (0 results). These synonyms mean "the whole
+# country" and must be dropped from `where`; cities/regions are passed through.
+_COUNTRY_NAME_SYNONYMS: dict[str, set[str]] = {
+    "gb": {"united kingdom", "uk", "u.k.", "great britain", "britain", "gb"},
+}
+
 
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
@@ -61,6 +68,12 @@ class AdzunaConnector(Connector):
         """Adzuna needs a free app_id + app_key; skip the source if missing."""
         return bool(self.app_id and self.app_key)
 
+    def guarantees_location(self, location: str) -> bool:
+        # The country is fixed by the URL path, so a country-level query (or no
+        # location) means every result is already in-country — no client filter needed.
+        loc = location.strip().lower()
+        return not loc or loc in _COUNTRY_NAME_SYNONYMS.get(self.country, set())
+
     def fetch(
         self, query: str = "", since: datetime | None = None, location: str = ""
     ) -> Iterable[RawPosting]:
@@ -77,8 +90,11 @@ class AdzunaConnector(Connector):
         }
         if query.strip():
             base_params["what"] = query.strip()
-        if location.strip():
-            base_params["where"] = location.strip()
+        # Only send `where` for sub-national places; the country itself is the URL path.
+        loc = location.strip()
+        country_names = _COUNTRY_NAME_SYNONYMS.get(self.country, set())
+        if loc and loc.lower() not in country_names:
+            base_params["where"] = loc
         if since is not None:
             days = max(1, (datetime.now(timezone.utc) - since).days)
             base_params["max_days_old"] = str(days)

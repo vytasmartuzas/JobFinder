@@ -104,12 +104,15 @@ def search(connectors: list[Connector], filters: SearchFilters) -> SearchOutcome
 
     for connector in connectors:
         result = SourceResult(source=connector.name)
+        # Sources that already constrain to the location don't need re-filtering
+        # (avoids dropping valid results with unrecognized county/town strings).
+        prefiltered = connector.guarantees_location(filters.location)
         try:
             for posting in connector.fetch(
                 query=filters.keyword, since=filters.since, location=filters.location
             ):
                 result.fetched += 1
-                if not location_matches(posting.location, filters.location):
+                if not prefiltered and not location_matches(posting.location, filters.location):
                     continue
                 content_hash = posting.content_hash()
                 if content_hash in seen_hashes:
