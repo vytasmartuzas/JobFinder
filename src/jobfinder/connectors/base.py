@@ -21,6 +21,14 @@ class Connector(ABC):
     name: str
 
     @abstractmethod
-    def fetch(self, query: str, since: datetime | None = None) -> Iterable[RawPosting]:
-        """Yield normalized postings matching `query`, newer than `since` if given."""
+    def fetch(
+        self, query: str = "", since: datetime | None = None, location: str = ""
+    ) -> Iterable[RawPosting]:
+        """Yield normalized postings for the given filters.
+
+        `query` is a keyword, `since` a recency cutoff, `location` a place hint.
+        Connectors apply whichever filters their source supports server-side; the
+        search orchestrator re-applies keyword/location uniformly so behavior is
+        consistent even when a source ignores a filter.
+        """
         raise NotImplementedError

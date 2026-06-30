@@ -1,8 +1,8 @@
 """JobFinder — Streamlit entry point (v1 UI shell).
 
-Thin UI over the ``jobfinder`` core package. All logic lives in the package, so
-swapping this for a FastAPI/React frontend in v2 means replacing this file, not
-rewriting the app.
+A job *search*: pick filters and sources, hit Search, and get a fresh result list
+each time (results don't accumulate). Thin UI over the ``jobfinder`` core package;
+all logic lives in the package.
 
 Run with:  uv run python -m streamlit run streamlit_app.py
 """
@@ -16,98 +16,118 @@ import streamlit as st
 
 from jobfinder import __version__
 from jobfinder.config import settings
-from jobfinder.connectors import GreenhouseConnector
-from jobfinder.db import init_db, session_scope
-from jobfinder.models import Application, Job, User
-from jobfinder.pipeline import run_connector
+from jobfinder.pipeline import (
+    DEFAULT_GREENHOUSE_BOARDS,
+    SearchFilters,
+    build_connectors,
+    search,
+)
 
-# A few public Greenhouse boards to start from; users can edit the list in the UI.
-DEFAULT_BOARDS = "stripe, figma, databricks, anthropic, duolingo"
+SOURCE_LABELS = {
+    "greenhouse": "Greenhouse (company boards)",
+    "themuse": "The Muse (aggregator)",
+    "adzuna": "Adzuna (UK, needs free key)",
+}
 
 st.set_page_config(page_title="JobFinder", page_icon="🧭", layout="wide")
-init_db()
-
 st.title("🧭 JobFinder")
-st.caption(f"Human-in-the-loop job-application assistant · v{__version__}")
+st.caption(f"Human-in-the-loop job search · v{__version__}")
 
-# --- Sidebar: ingest controls -------------------------------------------------
+# --- Sidebar: search controls -------------------------------------------------
 with st.sidebar:
-    st.header("Fetch jobs")
-    st.caption("Source: Greenhouse public boards (no API key needed).")
-    boards_raw = st.text_input("Company board tokens (comma-separated)", DEFAULT_BOARDS)
-    query = st.text_input("Keyword filter (optional)", "engineer")
-    days = st.slider("Only postings newer than (days)", 0, 180, 0,
-                     help="0 = no date filter")
+    st.header("Search")
+    keyword = st.text_input("Keyword", "engineer", placeholder="e.g. python, designer")
+    location = st.text_input("Location", "United Kingdom", placeholder="e.g. UK, London")
 
-    if st.button("Fetch & ingest", type="primary"):
-        boards = [b.strip() for b in boards_raw.split(",") if b.strip()]
-        since = (
-            datetime.now(timezone.utc) - timedelta(days=days) if days > 0 else None
+    st.markdown("**Sources**")
+    use_greenhouse = st.checkbox("Greenhouse (company boards)", value=True)
+    use_themuse = st.checkbox("The Muse (aggregator)", value=True)
+    adzuna_ready = bool(settings.adzuna_app_id and settings.adzuna_app_key)
+    use_adzuna = st.checkbox(
+        "Adzuna (UK)" + ("" if adzuna_ready else " — add API key to enable"),
+        value=adzuna_ready,
+    )
+
+    boards_raw = DEFAULT_GREENHOUSE_BOARDS
+    if use_greenhouse:
+        boards_text = st.text_input(
+            "Greenhouse boards (comma-separated)", ", ".join(DEFAULT_GREENHOUSE_BOARDS)
         )
-        if not boards:
-            st.warning("Enter at least one board token.")
-        else:
-            with st.spinner(f"Fetching from {len(boards)} board(s)…"):
-                try:
-                    with session_scope() as session:
-                        stats = run_connector(
-                            session,
-                            GreenhouseConnector(boards),
-                            query=query,
-                            since=since,
-                        )
-                    st.success(
-                        f"Found {stats.found} · added {stats.new} new · "
-                        f"{stats.duplicates} already known."
-                    )
-                except Exception as exc:  # surface connector/network errors in the UI
-                    st.error(f"Fetch failed: {exc}")
+        boards_raw = [b.strip() for b in boards_text.split(",") if b.strip()]
 
-# --- Metrics ------------------------------------------------------------------
-with session_scope() as session:
-    counts = {
-        "Users": session.query(User).count(),
-        "Jobs ingested": session.query(Job).count(),
-        "Applications": session.query(Application).count(),
-    }
-cols = st.columns(len(counts))
-for col, (label, value) in zip(cols, counts.items()):
-    col.metric(label, value)
+    days = st.slider("Posted within (days)", 0, 180, 0, help="0 = any time")
 
-st.divider()
+    do_search = st.button("Search", type="primary", use_container_width=True)
 
-# --- Ingested jobs table ------------------------------------------------------
-st.subheader("Ingested jobs")
-with session_scope() as session:
-    jobs = (
-        session.query(Job)
-        .order_by(Job.posted_at.is_(None), Job.posted_at.desc())
-        .limit(200)
-        .all()
-    )
-
-if not jobs:
-    st.info("No jobs yet. Use **Fetch jobs** in the sidebar to pull some in.")
-else:
-    rows = [
-        {
-            "Title": j.title,
-            "Company": j.company,
-            "Location": j.location or "—",
-            "Remote": "✅" if j.remote else "",
-            "Posted": j.posted_at.date().isoformat() if j.posted_at else "—",
-            "Source": j.source,
-            "Link": j.url,
-        }
-        for j in jobs
+# --- Run a search (replaces previous results) ---------------------------------
+if do_search:
+    sources = [
+        name
+        for name, on in (
+            ("greenhouse", use_greenhouse),
+            ("themuse", use_themuse),
+            ("adzuna", use_adzuna),
+        )
+        if on
     ]
-    st.dataframe(
-        pd.DataFrame(rows),
-        hide_index=True,
-        use_container_width=True,
-        column_config={"Link": st.column_config.LinkColumn("Link", display_text="open")},
-    )
-    st.caption(f"Showing {len(jobs)} most recent (newest postings first).")
+    if not sources:
+        st.warning("Select at least one source.")
+    else:
+        since = datetime.now(timezone.utc) - timedelta(days=days) if days > 0 else None
+        filters = SearchFilters(keyword=keyword, location=location, since=since)
+        connectors = build_connectors(sources, location=location, greenhouse_boards=boards_raw)
+        with st.spinner("Searching…"):
+            st.session_state["outcome"] = search(connectors, filters)
+        st.session_state["query_label"] = (
+            f"“{keyword or 'any'}” in “{location or 'anywhere'}”"
+        )
+
+# --- Render results -----------------------------------------------------------
+outcome = st.session_state.get("outcome")
+
+if outcome is None:
+    st.info("Set your filters in the sidebar and hit **Search** to find jobs.")
+else:
+    st.subheader(f"{outcome.total} results · {st.session_state.get('query_label', '')}")
+
+    # Per-source summary, including skipped/errored sources (e.g. Adzuna w/o key).
+    chips = []
+    for s in outcome.sources:
+        label = SOURCE_LABELS.get(s.source, s.source)
+        if s.error:
+            chips.append(f"⚠️ {label}: {s.error}")
+        else:
+            chips.append(f"✅ {label}: {s.kept} kept / {s.fetched} fetched")
+    st.caption(" · ".join(chips))
+
+    if outcome.total == 0:
+        st.warning("No matches. Try a broader keyword, a different location, or more sources.")
+    else:
+        rows = [
+            {
+                "Title": p.title,
+                "Company": p.company,
+                "Location": p.location or "—",
+                "Remote": "✅" if p.remote else "",
+                "Posted": p.posted_at.date().isoformat() if p.posted_at else "—",
+                "Source": p.source,
+                "Link": p.url,
+            }
+            for p in outcome.postings
+        ]
+        st.dataframe(
+            pd.DataFrame(rows),
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Link": st.column_config.LinkColumn("Link", display_text="open")
+            },
+        )
 
 with st.expander("Configuration"):
-    st.write({"database_url": settings.database_url, "generated_dir": str(settings.generated_dir)})
+    st.write(
+        {
+            "adzuna_configured": bool(settings.adzuna_app_id and settings.adzuna_app_key),
+            "database_url": settings.database_url,
+        }
+    )

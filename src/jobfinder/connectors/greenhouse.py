@@ -51,13 +51,23 @@ class GreenhouseConnector(Connector):
         # Injectable for offline tests; None means a real network transport.
         self.transport = transport
 
-    def fetch(self, query: str = "", since: datetime | None = None) -> Iterable[RawPosting]:
+    def fetch(
+        self, query: str = "", since: datetime | None = None, location: str = ""
+    ) -> Iterable[RawPosting]:
+        # The board API has no location parameter; the search orchestrator applies the
+        # location filter. `location` is accepted only to satisfy the interface.
+        _ = location
         query_l = query.strip().lower()
         with httpx.Client(
             timeout=self.timeout, follow_redirects=True, transport=self.transport
         ) as client:
             for board in self.board_tokens:
-                yield from self._fetch_board(client, board, query_l, since)
+                try:
+                    yield from self._fetch_board(client, board, query_l, since)
+                except httpx.HTTPError:
+                    # An invalid/private board token (404 etc.) shouldn't sink the
+                    # other boards; skip it and continue.
+                    continue
 
     def _fetch_board(
         self,

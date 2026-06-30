@@ -26,8 +26,10 @@ class Settings(BaseSettings):
     database_url: str = Field(default="sqlite:///./data/jobfinder.db")
     generated_dir: Path = Field(default=PROJECT_ROOT / "generated")
 
-    # Read without the JOBFINDER_ prefix to match the vendor's conventional name.
+    # Read without the JOBFINDER_ prefix to match each vendor's conventional name.
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    adzuna_app_id: str | None = Field(default=None, alias="ADZUNA_APP_ID")
+    adzuna_app_key: str | None = Field(default=None, alias="ADZUNA_APP_KEY")
 
     def ensure_dirs(self) -> None:
         """Create local directories the app writes to (data dir, generated output)."""
