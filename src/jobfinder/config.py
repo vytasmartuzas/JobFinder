@@ -26,8 +26,9 @@ class Settings(BaseSettings):
     database_url: str = Field(default="sqlite:///./data/jobfinder.db")
     generated_dir: Path = Field(default=PROJECT_ROOT / "generated")
 
-    # LLM model used for CV tailoring (build step 4).
-    anthropic_model: str = Field(default="claude-opus-4-8")
+    # LLM model used for CV tailoring (build step 4). Override with
+    # JOBFINDER_ANTHROPIC_MODEL (e.g. claude-opus-4-8 for higher quality).
+    anthropic_model: str = Field(default="claude-sonnet-5")
 
     def cv_path(self) -> Path:
         """The user's master CV JSON, falling back to the committed example."""
