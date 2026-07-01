@@ -17,6 +17,7 @@ import streamlit as st
 from jobfinder import __version__
 from jobfinder.config import settings
 from jobfinder.cv import CVContent, diff_cv, render_cv_bytes, tailor_cv
+from jobfinder.matching import MatchFilters, Profile, rank
 from jobfinder.pipeline import (
     DEFAULT_GREENHOUSE_BOARDS,
     SearchFilters,
@@ -83,8 +84,9 @@ if do_search:
             f"“{keyword or 'any'}” in “{location or 'anywhere'}”"
         )
 
-# --- Render results -----------------------------------------------------------
+# --- Render results (scored against your CV, filtered, best-match first) ------
 outcome = st.session_state.get("outcome")
+ranked_postings = []  # used by the Tailor section below
 
 if outcome is None:
     st.info("Set your filters in the sidebar and hit **Search** to find jobs.")
@@ -104,8 +106,31 @@ else:
     if outcome.total == 0:
         st.warning("No matches. Try a broader keyword, a different location, or more sources.")
     else:
+        # Match & filter controls — scored locally against your CV, no API needed.
+        c1, c2, c3 = st.columns([2, 1, 1])
+        boost_kw = c1.text_input("Boost keywords", help="Extra relevant terms, comma-separated")
+        exclude_kw = c1.text_input("Exclude keywords", help="Drop jobs mentioning these")
+        min_score = c2.slider("Min match %", 0, 100, 0)
+        entry_only = c3.checkbox("Entry-level only")
+        remote_only = c3.checkbox("Remote only")
+
+        profile = Profile.from_cv(
+            CVContent.load(settings.cv_path()),
+            target_keywords=[k for k in boost_kw.split(",") if k.strip()],
+        )
+        mfilters = MatchFilters(
+            min_score=min_score,
+            exclude_keywords=[k for k in exclude_kw.split(",") if k.strip()],
+            require_remote=remote_only,
+            entry_level_only=entry_only,
+        )
+        ranked = rank(profile, outcome.postings, mfilters)
+        ranked_postings = [p for p, _ in ranked]
+
+        st.caption(f"Showing {len(ranked)} of {outcome.total} after match filtering.")
         rows = [
             {
+                "Match": r.score,
                 "Title": p.title,
                 "Company": p.company,
                 "Location": p.location or "—",
@@ -114,14 +139,17 @@ else:
                 "Source": p.source,
                 "Link": p.url,
             }
-            for p in outcome.postings
+            for p, r in ranked
         ]
         st.dataframe(
             pd.DataFrame(rows),
             hide_index=True,
             use_container_width=True,
             column_config={
-                "Link": st.column_config.LinkColumn("Link", display_text="open")
+                "Match": st.column_config.ProgressColumn(
+                    "Match", min_value=0, max_value=100, format="%d%%"
+                ),
+                "Link": st.column_config.LinkColumn("Link", display_text="open"),
             },
         )
 
@@ -139,7 +167,8 @@ else:
     master_cv = CVContent.load(settings.cv_path())
     st.caption(f"Master CV: {settings.cv_path().name} · model: {settings.anthropic_model}")
 
-    postings = outcome.postings if outcome else []
+    # Offer the ranked (best-match-first) jobs from the search above.
+    postings = ranked_postings
     labels = ["✏️ Paste a job description"] + [
         f"{p.title} — {p.company}" for p in postings
     ]
