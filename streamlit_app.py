@@ -16,6 +16,7 @@ import streamlit as st
 
 from jobfinder import __version__
 from jobfinder.config import settings
+from jobfinder.cv import CVContent, diff_cv, render_cv_bytes, tailor_cv
 from jobfinder.pipeline import (
     DEFAULT_GREENHOUSE_BOARDS,
     SearchFilters,
@@ -124,10 +125,90 @@ else:
             },
         )
 
+st.divider()
+
+# --- Tailor CV ----------------------------------------------------------------
+st.subheader("✍️ Tailor your CV")
+if not settings.anthropic_api_key:
+    st.info(
+        "Set `ANTHROPIC_API_KEY` in `.env` to enable CV tailoring. It rewrites your "
+        "summary and bullet wording for a chosen job — never changing employers, "
+        "dates, or facts — and shows you a diff before you download."
+    )
+else:
+    master_cv = CVContent.load(settings.cv_path())
+    st.caption(f"Master CV: {settings.cv_path().name} · model: {settings.anthropic_model}")
+
+    postings = outcome.postings if outcome else []
+    labels = ["✏️ Paste a job description"] + [
+        f"{p.title} — {p.company}" for p in postings
+    ]
+    choice = st.selectbox("Job to tailor for", labels)
+
+    if choice == labels[0]:
+        title = st.text_input("Job title")
+        company = st.text_input("Company")
+        description = st.text_area("Job description", height=180)
+    else:
+        picked = postings[labels.index(choice) - 1]
+        title, company, description = picked.title, picked.company, picked.description
+        with st.expander("Job description", expanded=False):
+            st.write(description or "_(no description)_")
+
+    if st.button("Tailor CV", type="primary"):
+        if not description.strip():
+            st.warning("Provide a job description to tailor against.")
+        else:
+            with st.spinner("Tailoring with Claude…"):
+                try:
+                    result = tailor_cv(
+                        master_cv, title=title, company=company, description=description
+                    )
+                    st.session_state["tailored"] = (result, master_cv, company or "job")
+                except Exception as exc:  # billing, network, API errors
+                    st.session_state.pop("tailored", None)
+                    st.error(f"Tailoring failed: {exc}")
+
+    tailored_state = st.session_state.get("tailored")
+    if tailored_state:
+        result, master_used, comp = tailored_state
+        for warning in result.warnings:
+            st.warning(warning)
+
+        changes = diff_cv(master_used, result.tailored)
+        st.write(f"**{len(changes)} content change(s)** — review before using:")
+        if changes:
+            st.dataframe(
+                pd.DataFrame(
+                    [{"Field": c.path, "Before": c.before, "After": c.after} for c in changes]
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+        safe_comp = "".join(ch for ch in comp if ch.isalnum() or ch in "-_") or "job"
+        c1, c2 = st.columns(2)
+        c1.download_button(
+            "⬇️ Tailored CV (PDF)",
+            data=render_cv_bytes(result.tailored),
+            file_name=f"CV_{safe_comp}.pdf",
+            mime="application/pdf",
+            type="primary",
+        )
+        c2.download_button(
+            "⬇️ Master CV (PDF)",
+            data=render_cv_bytes(master_used),
+            file_name="CV_master.pdf",
+            mime="application/pdf",
+        )
+
 with st.expander("Configuration"):
     st.write(
         {
             "adzuna_configured": bool(settings.adzuna_app_id and settings.adzuna_app_key),
+            "anthropic_configured": bool(settings.anthropic_api_key),
+            "anthropic_model": settings.anthropic_model,
+            "cv": settings.cv_path().name,
             "database_url": settings.database_url,
         }
     )

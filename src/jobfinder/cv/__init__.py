@@ -12,7 +12,9 @@ from .content import (
     ExperienceEntry,
     SkillRow,
 )
-from .render import render_cv_pdf
+from .diff import FieldChange, diff_cv
+from .render import render_cv_bytes, render_cv_pdf
+from .tailor import TailorResult, tailor_cv
 
 __all__ = [
     "CVContent",
@@ -21,4 +23,9 @@ __all__ = [
     "ExperienceEntry",
     "SkillRow",
     "render_cv_pdf",
+    "render_cv_bytes",
+    "diff_cv",
+    "FieldChange",
+    "tailor_cv",
+    "TailorResult",
 ]

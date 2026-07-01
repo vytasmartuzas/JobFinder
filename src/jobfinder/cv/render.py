@@ -131,8 +131,8 @@ class _CVDocument(FPDF):
             self.set_y(self.get_y() + 1.4)
 
 
-def render_cv_pdf(content: CVContent, out_path: str | Path) -> Path:
-    """Render `content` to a PDF at `out_path` using the fixed template."""
+def _build_document(content: CVContent) -> _CVDocument:
+    """Build the PDF document for `content` using the fixed template."""
     doc = _CVDocument()
 
     # Header: name + contact lines, then a rule.
@@ -181,7 +181,17 @@ def render_cv_pdf(content: CVContent, out_path: str | Path) -> Path:
             doc.bullets(job.bullets)
             doc.ln(1.5)
 
+    return doc
+
+
+def render_cv_pdf(content: CVContent, out_path: str | Path) -> Path:
+    """Render `content` to a PDF file at `out_path`."""
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    doc.output(str(out))
+    _build_document(content).output(str(out))
     return out
+
+
+def render_cv_bytes(content: CVContent) -> bytes:
+    """Render `content` to PDF bytes (e.g. for a download button)."""
+    return bytes(_build_document(content).output())

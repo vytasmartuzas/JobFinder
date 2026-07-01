@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     database_url: str = Field(default="sqlite:///./data/jobfinder.db")
     generated_dir: Path = Field(default=PROJECT_ROOT / "generated")
 
+    # LLM model used for CV tailoring (build step 4).
+    anthropic_model: str = Field(default="claude-opus-4-8")
+
+    def cv_path(self) -> Path:
+        """The user's master CV JSON, falling back to the committed example."""
+        master = PROJECT_ROOT / "cv" / "master_cv.json"
+        return master if master.exists() else PROJECT_ROOT / "cv" / "example_cv.json"
+
     # Read without the JOBFINDER_ prefix to match each vendor's conventional name.
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     adzuna_app_id: str | None = Field(default=None, alias="ADZUNA_APP_ID")

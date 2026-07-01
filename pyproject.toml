@@ -12,6 +12,7 @@ dependencies = [
     "streamlit>=1.36",
     "python-dotenv>=1.0",
     "fpdf2>=2.7",
+    "anthropic>=0.40",
 ]
 
 [project.optional-dependencies]
