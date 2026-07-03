@@ -10,14 +10,16 @@ Run with:  uv run python -m streamlit run streamlit_app.py
 from __future__ import annotations
 
 import hashlib
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import streamlit as st
 
 from jobfinder import __version__
-from jobfinder.config import settings
-from jobfinder.cv import CVContent, diff_cv, render_cv_bytes, tailor_cv
+from jobfinder.config import PROJECT_ROOT, settings
+from jobfinder.cv import CVContent, diff_cv, render_cv_bytes, render_cv_pdf, tailor_cv
 from jobfinder.db import init_db, session_scope
 from jobfinder.matching import MatchFilters, Profile, rank, score_posting
 from jobfinder.models import ApplicationStatus
@@ -358,7 +360,32 @@ else:
                 if b2.button("❌ Reject", key=f"reject_{app.id}"):
                     _move(ApplicationStatus.rejected)
             elif app.status == ApplicationStatus.approved:
-                b1.link_button("↗️ Open application page", app.url, disabled=not app.url)
+                if b1.button(
+                    "🚀 Open & pre-fill form",
+                    key=f"assist_{app.id}",
+                    disabled=not app.url,
+                    help="Opens the application page in your browser with your details "
+                    "pre-filled and the tailored CV attached. You review and submit.",
+                ):
+                    cv_pdf = None
+                    if tailored_cv is not None:
+                        safe = (
+                            "".join(
+                                ch for ch in (app.company or "job") if ch.isalnum() or ch in "-_"
+                            )
+                            or "job"
+                        )
+                        cv_pdf = render_cv_pdf(
+                            tailored_cv, settings.generated_dir / f"CV_{app.id}_{safe}.pdf"
+                        )
+                    cmd = [sys.executable, "-m", "jobfinder.submit", app.url]
+                    if cv_pdf is not None:
+                        cmd += ["--cv", str(cv_pdf)]
+                    subprocess.Popen(cmd, cwd=str(PROJECT_ROOT))
+                    st.info(
+                        "Browser opening… review the pre-filled form, submit it yourself, "
+                        "then come back and **Mark submitted**."
+                    )
                 if b2.button("📤 Mark submitted", key=f"submit_{app.id}", type="primary"):
                     _move(ApplicationStatus.submitted)
                 if b3.button("❌ Reject", key=f"reject_{app.id}"):
