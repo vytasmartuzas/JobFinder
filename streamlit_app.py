@@ -9,6 +9,7 @@ Run with:  uv run python -m streamlit run streamlit_app.py
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -17,13 +18,20 @@ import streamlit as st
 from jobfinder import __version__
 from jobfinder.config import settings
 from jobfinder.cv import CVContent, diff_cv, render_cv_bytes, tailor_cv
-from jobfinder.matching import MatchFilters, Profile, rank
+from jobfinder.db import init_db, session_scope
+from jobfinder.matching import MatchFilters, Profile, rank, score_posting
+from jobfinder.models import ApplicationStatus
 from jobfinder.pipeline import (
     DEFAULT_GREENHOUSE_BOARDS,
     SearchFilters,
     build_connectors,
+    list_applications,
+    save_application,
     search,
+    set_status,
+    update_tailored_content,
 )
+from jobfinder.schema import RawPosting
 
 SOURCE_LABELS = {
     "greenhouse": "Greenhouse (company boards)",
@@ -31,7 +39,19 @@ SOURCE_LABELS = {
     "adzuna": "Adzuna (UK, needs free key)",
 }
 
+STATUS_BADGES = {
+    ApplicationStatus.in_review: "🟡 in review",
+    ApplicationStatus.approved: "🟢 approved",
+    ApplicationStatus.submitted: "📤 submitted",
+    ApplicationStatus.responded: "💬 responded",
+    ApplicationStatus.rejected: "❌ rejected",
+    ApplicationStatus.matched: "◻️ matched",
+    ApplicationStatus.discovered: "◻️ discovered",
+    ApplicationStatus.tailored: "◻️ tailored",
+}
+
 st.set_page_config(page_title="JobFinder", page_icon="🧭", layout="wide")
+init_db()
 st.title("🧭 JobFinder")
 st.caption(f"Human-in-the-loop job search · v{__version__}")
 
@@ -178,9 +198,20 @@ else:
         title = st.text_input("Job title")
         company = st.text_input("Company")
         description = st.text_area("Job description", height=180)
+        url = st.text_input("Job URL (optional)")
+        # A pasted JD becomes a synthetic posting so it can be saved like any other.
+        digest = hashlib.sha256(f"{title}|{company}|{description}".encode()).hexdigest()[:16]
+        posting = RawPosting(
+            source="manual",
+            external_id=digest,
+            title=title or "Untitled role",
+            company=company or "Unknown",
+            description=description,
+            url=url,
+        )
     else:
-        picked = postings[labels.index(choice) - 1]
-        title, company, description = picked.title, picked.company, picked.description
+        posting = postings[labels.index(choice) - 1]
+        title, company, description = posting.title, posting.company, posting.description
         with st.expander("Job description", expanded=False):
             st.write(description or "_(no description)_")
 
@@ -193,14 +224,15 @@ else:
                     result = tailor_cv(
                         master_cv, title=title, company=company, description=description
                     )
-                    st.session_state["tailored"] = (result, master_cv, company or "job")
+                    st.session_state["tailored"] = (result, master_cv, posting)
                 except Exception as exc:  # billing, network, API errors
                     st.session_state.pop("tailored", None)
                     st.error(f"Tailoring failed: {exc}")
 
     tailored_state = st.session_state.get("tailored")
     if tailored_state:
-        result, master_used, comp = tailored_state
+        result, master_used, tailored_posting = tailored_state
+        comp = tailored_posting.company or "job"
         for warning in result.warnings:
             st.warning(warning)
 
@@ -216,13 +248,12 @@ else:
             )
 
         safe_comp = "".join(ch for ch in comp if ch.isalnum() or ch in "-_") or "job"
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         c1.download_button(
             "⬇️ Tailored CV (PDF)",
             data=render_cv_bytes(result.tailored),
             file_name=f"CV_{safe_comp}.pdf",
             mime="application/pdf",
-            type="primary",
         )
         c2.download_button(
             "⬇️ Master CV (PDF)",
@@ -230,6 +261,119 @@ else:
             file_name="CV_master.pdf",
             mime="application/pdf",
         )
+        if c3.button("💾 Save to review queue", type="primary"):
+            match = score_posting(Profile.from_cv(master_used), tailored_posting)
+            with session_scope() as db:
+                save_application(
+                    db,
+                    tailored_posting,
+                    tailored_content_json=result.tailored.to_json(),
+                    match_score=float(match.score),
+                )
+            st.session_state.pop("tailored", None)
+            st.success("Saved — it's now in the review queue below.")
+            st.rerun()
+
+st.divider()
+
+# --- Review queue ---------------------------------------------------------------
+st.subheader("📋 Review queue")
+with session_scope() as db:
+    apps = list_applications(db)
+
+if not apps:
+    st.info("Nothing here yet. Tailor a CV above and hit **Save to review queue**.")
+else:
+    master_for_diff = CVContent.load(settings.cv_path())
+    active = [a for a in apps if a.status != ApplicationStatus.rejected]
+    rejected = [a for a in apps if a.status == ApplicationStatus.rejected]
+
+    for app in active:
+        badge = STATUS_BADGES.get(app.status, app.status.value)
+        score = f" · match {app.match_score:.0f}%" if app.match_score is not None else ""
+        with st.expander(f"{badge} — {app.title} — {app.company}{score}"):
+            meta = f"Saved {app.created_at:%Y-%m-%d}" if app.created_at else ""
+            if app.submitted_at:
+                meta += f" · submitted {app.submitted_at:%Y-%m-%d}"
+            if app.url:
+                meta += f" · [job posting]({app.url})"
+            st.caption(meta)
+
+            tailored_cv = (
+                CVContent.from_json(app.tailored_content_json)
+                if app.tailored_content_json
+                else None
+            )
+            if tailored_cv is not None:
+                changes = diff_cv(master_for_diff, tailored_cv)
+                if changes:
+                    st.dataframe(
+                        pd.DataFrame(
+                            [
+                                {"Field": c.path, "Before": c.before, "After": c.after}
+                                for c in changes
+                            ]
+                        ),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+                st.download_button(
+                    "⬇️ Tailored CV (PDF)",
+                    data=render_cv_bytes(tailored_cv),
+                    file_name=f"CV_{app.company or 'job'}.pdf",
+                    mime="application/pdf",
+                    key=f"pdf_{app.id}",
+                )
+                with st.popover("✏️ Edit tailored content"):
+                    edited = st.text_area(
+                        "Tailored CV (JSON)",
+                        value=app.tailored_content_json,
+                        height=300,
+                        key=f"edit_{app.id}",
+                    )
+                    if st.button("Save edits", key=f"save_edit_{app.id}"):
+                        try:
+                            CVContent.from_json(edited)  # validate before storing
+                        except Exception as exc:
+                            st.error(f"Invalid CV JSON: {exc}")
+                        else:
+                            with session_scope() as db:
+                                update_tailored_content(db, app.id, edited)
+                            st.rerun()
+
+            notes = st.text_input("Notes", value=app.notes or "", key=f"notes_{app.id}")
+            if app.status == ApplicationStatus.responded and app.response_status:
+                st.write(f"**Response:** {app.response_status}")
+
+            # Lifecycle actions, derived from the current status.
+            b1, b2, b3 = st.columns(3)
+            def _move(status: ApplicationStatus, **kwargs) -> None:
+                with session_scope() as db:
+                    set_status(db, app.id, status, notes=notes or None, **kwargs)
+                st.rerun()
+
+            if app.status == ApplicationStatus.in_review:
+                if b1.button("✅ Approve", key=f"approve_{app.id}", type="primary"):
+                    _move(ApplicationStatus.approved)
+                if b2.button("❌ Reject", key=f"reject_{app.id}"):
+                    _move(ApplicationStatus.rejected)
+            elif app.status == ApplicationStatus.approved:
+                b1.link_button("↗️ Open application page", app.url, disabled=not app.url)
+                if b2.button("📤 Mark submitted", key=f"submit_{app.id}", type="primary"):
+                    _move(ApplicationStatus.submitted)
+                if b3.button("❌ Reject", key=f"reject_{app.id}"):
+                    _move(ApplicationStatus.rejected)
+            elif app.status == ApplicationStatus.submitted:
+                response = b1.text_input(
+                    "Response (e.g. interview, offer, rejection)", key=f"resp_{app.id}"
+                )
+                if b2.button("💬 Record response", key=f"respond_{app.id}", type="primary"):
+                    _move(ApplicationStatus.responded, response_status=response or "responded")
+
+    if rejected:
+        with st.expander(f"❌ Rejected ({len(rejected)})"):
+            for app in rejected:
+                st.write(f"- {app.title} — {app.company}")
 
 with st.expander("Configuration"):
     st.write(

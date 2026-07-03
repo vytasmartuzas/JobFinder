@@ -4,6 +4,14 @@ Each stage is a plain function operating on the database and canonical schema
 objects, so stages can be run from the UI, a CLI, or scheduled workers alike.
 """
 
+from .applications import (
+    ApplicationView,
+    get_or_create_default_user,
+    list_applications,
+    save_application,
+    set_status,
+    update_tailored_content,
+)
 from .ingest import IngestStats, ingest_postings, run_connector
 from .search import (
     ALL_SOURCES,
@@ -16,6 +24,12 @@ from .search import (
 )
 
 __all__ = [
+    "ApplicationView",
+    "get_or_create_default_user",
+    "list_applications",
+    "save_application",
+    "set_status",
+    "update_tailored_content",
     "IngestStats",
     "ingest_postings",
     "run_connector",
