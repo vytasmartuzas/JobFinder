@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # JOBFINDER_ANTHROPIC_MODEL (e.g. claude-opus-4-8 for higher quality).
     anthropic_model: str = Field(default="claude-sonnet-5")
 
+    # Port for the local HTTP API (browser-extension backend). The extension's
+    # manifest must be allowed to reach this port, so change both together.
+    server_port: int = Field(default=8765)
+
     def cv_path(self) -> Path:
         """The user's master CV JSON, falling back to the committed example."""
         master = PROJECT_ROOT / "cv" / "master_cv.json"

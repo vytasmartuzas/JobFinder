@@ -14,6 +14,8 @@ dependencies = [
     "fpdf2>=2.7",
     "anthropic>=0.40",
     "playwright>=1.45",
+    "fastapi>=0.139.0",
+    "uvicorn>=0.49.0",
 ]
 
 [project.optional-dependencies]
