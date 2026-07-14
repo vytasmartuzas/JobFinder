@@ -57,6 +57,28 @@ init_db()
 st.title("🧭 JobFinder")
 st.caption(f"Human-in-the-loop job search · v{__version__}")
 
+
+def run_tailoring(posting: RawPosting) -> None:
+    """Tailor the master CV for `posting`, stash the result, and refresh the UI."""
+    if not (posting.description or "").strip():
+        st.warning("This posting has no job description to tailor against.")
+        return
+    master_cv = CVContent.load(settings.cv_path())
+    with st.spinner("Tailoring with Claude…"):
+        try:
+            result = tailor_cv(
+                master_cv,
+                title=posting.title,
+                company=posting.company,
+                description=posting.description,
+            )
+        except Exception as exc:  # billing, network, API errors
+            st.session_state.pop("tailored", None)
+            st.error(f"Tailoring failed: {exc}")
+            return
+    st.session_state["tailored"] = (result, master_cv, posting)
+    st.rerun()
+
 # --- Sidebar: search controls -------------------------------------------------
 with st.sidebar:
     st.header("Search")
@@ -108,7 +130,7 @@ if do_search:
 
 # --- Render results (scored against your CV, filtered, best-match first) ------
 outcome = st.session_state.get("outcome")
-ranked_postings = []  # used by the Tailor section below
+ranked_postings = []  # row-selection below maps back into this ranked list
 
 if outcome is None:
     st.info("Set your filters in the sidebar and hit **Search** to find jobs.")
@@ -163,7 +185,7 @@ else:
             }
             for p, r in ranked
         ]
-        st.dataframe(
+        event = st.dataframe(
             pd.DataFrame(rows),
             hide_index=True,
             use_container_width=True,
@@ -173,108 +195,106 @@ else:
                 ),
                 "Link": st.column_config.LinkColumn("Link", display_text="open"),
             },
+            on_select="rerun",
+            selection_mode="single-row",
+            key="results_table",
         )
+
+        sel = event.selection.rows if event else []
+        selected_posting = ranked_postings[sel[0]] if sel else None
+        tailor_ready = bool(settings.anthropic_api_key)
+
+        b_col, hint_col = st.columns([1, 3])
+        if b_col.button(
+            "✂️ Tailor CV",
+            type="primary",
+            disabled=selected_posting is None or not tailor_ready,
+        ):
+            run_tailoring(selected_posting)
+        if not tailor_ready:
+            hint_col.caption("Set `ANTHROPIC_API_KEY` in `.env` to enable CV tailoring.")
+        elif selected_posting is None:
+            hint_col.caption("Tick a row's checkbox to tailor your CV for that job.")
+        else:
+            hint_col.caption(
+                f"Selected: **{selected_posting.title} — {selected_posting.company}**"
+            )
+
+# --- Tailored CV result (from the ✂️ button above or the expander below) --------
+tailored_state = st.session_state.get("tailored")
+if tailored_state:
+    st.divider()
+    result, master_used, tailored_posting = tailored_state
+    comp = tailored_posting.company or "job"
+    st.subheader(f"✍️ Tailored CV — {tailored_posting.title} — {comp}")
+    st.caption(f"Master CV: {settings.cv_path().name} · model: {settings.anthropic_model}")
+    for warning in result.warnings:
+        st.warning(warning)
+
+    changes = diff_cv(master_used, result.tailored)
+    st.write(f"**{len(changes)} content change(s)** — review before using:")
+    if changes:
+        st.dataframe(
+            pd.DataFrame(
+                [{"Field": c.path, "Before": c.before, "After": c.after} for c in changes]
+            ),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    safe_comp = "".join(ch for ch in comp if ch.isalnum() or ch in "-_") or "job"
+    c1, c2, c3 = st.columns(3)
+    c1.download_button(
+        "⬇️ Tailored CV (PDF)",
+        data=render_cv_bytes(result.tailored),
+        file_name=f"CV_{safe_comp}.pdf",
+        mime="application/pdf",
+    )
+    c2.download_button(
+        "⬇️ Master CV (PDF)",
+        data=render_cv_bytes(master_used),
+        file_name="CV_master.pdf",
+        mime="application/pdf",
+    )
+    if c3.button("💾 Save to review queue", type="primary"):
+        match = score_posting(Profile.from_cv(master_used), tailored_posting)
+        with session_scope() as db:
+            save_application(
+                db,
+                tailored_posting,
+                tailored_content_json=result.tailored.to_json(),
+                match_score=float(match.score),
+            )
+        st.session_state.pop("tailored", None)
+        st.success("Saved — it's now in the review queue below.")
+        st.rerun()
 
 st.divider()
 
-# --- Tailor CV ----------------------------------------------------------------
-st.subheader("✍️ Tailor your CV")
-if not settings.anthropic_api_key:
-    st.info(
-        "Set `ANTHROPIC_API_KEY` in `.env` to enable CV tailoring. It rewrites your "
-        "summary and bullet wording for a chosen job — never changing employers, "
-        "dates, or facts — and shows you a diff before you download."
-    )
-else:
-    master_cv = CVContent.load(settings.cv_path())
-    st.caption(f"Master CV: {settings.cv_path().name} · model: {settings.anthropic_model}")
-
-    # Offer the ranked (best-match-first) jobs from the search above.
-    postings = ranked_postings
-    labels = ["✏️ Paste a job description"] + [
-        f"{p.title} — {p.company}" for p in postings
-    ]
-    choice = st.selectbox("Job to tailor for", labels)
-
-    if choice == labels[0]:
+# --- Tailor for a job found outside the search ----------------------------------
+with st.expander("✏️ Tailor for a job found elsewhere (paste a description)"):
+    if not settings.anthropic_api_key:
+        st.info("Set `ANTHROPIC_API_KEY` in `.env` to enable CV tailoring.")
+    else:
         title = st.text_input("Job title")
         company = st.text_input("Company")
         description = st.text_area("Job description", height=180)
         url = st.text_input("Job URL (optional)")
-        # A pasted JD becomes a synthetic posting so it can be saved like any other.
-        digest = hashlib.sha256(f"{title}|{company}|{description}".encode()).hexdigest()[:16]
-        posting = RawPosting(
-            source="manual",
-            external_id=digest,
-            title=title or "Untitled role",
-            company=company or "Unknown",
-            description=description,
-            url=url,
-        )
-    else:
-        posting = postings[labels.index(choice) - 1]
-        title, company, description = posting.title, posting.company, posting.description
-        with st.expander("Job description", expanded=False):
-            st.write(description or "_(no description)_")
-
-    if st.button("Tailor CV", type="primary"):
-        if not description.strip():
-            st.warning("Provide a job description to tailor against.")
-        else:
-            with st.spinner("Tailoring with Claude…"):
-                try:
-                    result = tailor_cv(
-                        master_cv, title=title, company=company, description=description
-                    )
-                    st.session_state["tailored"] = (result, master_cv, posting)
-                except Exception as exc:  # billing, network, API errors
-                    st.session_state.pop("tailored", None)
-                    st.error(f"Tailoring failed: {exc}")
-
-    tailored_state = st.session_state.get("tailored")
-    if tailored_state:
-        result, master_used, tailored_posting = tailored_state
-        comp = tailored_posting.company or "job"
-        for warning in result.warnings:
-            st.warning(warning)
-
-        changes = diff_cv(master_used, result.tailored)
-        st.write(f"**{len(changes)} content change(s)** — review before using:")
-        if changes:
-            st.dataframe(
-                pd.DataFrame(
-                    [{"Field": c.path, "Before": c.before, "After": c.after} for c in changes]
-                ),
-                hide_index=True,
-                use_container_width=True,
-            )
-
-        safe_comp = "".join(ch for ch in comp if ch.isalnum() or ch in "-_") or "job"
-        c1, c2, c3 = st.columns(3)
-        c1.download_button(
-            "⬇️ Tailored CV (PDF)",
-            data=render_cv_bytes(result.tailored),
-            file_name=f"CV_{safe_comp}.pdf",
-            mime="application/pdf",
-        )
-        c2.download_button(
-            "⬇️ Master CV (PDF)",
-            data=render_cv_bytes(master_used),
-            file_name="CV_master.pdf",
-            mime="application/pdf",
-        )
-        if c3.button("💾 Save to review queue", type="primary"):
-            match = score_posting(Profile.from_cv(master_used), tailored_posting)
-            with session_scope() as db:
-                save_application(
-                    db,
-                    tailored_posting,
-                    tailored_content_json=result.tailored.to_json(),
-                    match_score=float(match.score),
+        if st.button("✂️ Tailor CV", type="primary", key="manual_tailor"):
+            # A pasted JD becomes a synthetic posting so it can be saved like any other.
+            digest = hashlib.sha256(
+                f"{title}|{company}|{description}".encode()
+            ).hexdigest()[:16]
+            run_tailoring(
+                RawPosting(
+                    source="manual",
+                    external_id=digest,
+                    title=title or "Untitled role",
+                    company=company or "Unknown",
+                    description=description,
+                    url=url,
                 )
-            st.session_state.pop("tailored", None)
-            st.success("Saved — it's now in the review queue below.")
-            st.rerun()
+            )
 
 st.divider()
 
