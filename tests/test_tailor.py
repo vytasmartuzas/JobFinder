@@ -49,6 +49,44 @@ def test_enforce_invariants_holds_facts_but_keeps_rewrites() -> None:
     assert t.skills[0].items == master.skills[-1].items  # not the injected fake items
 
 
+def test_enforce_invariants_realigns_reordered_entries() -> None:
+    """Regression: the model returned experience entries in a different order,
+    and positional pairing attached each employer's rewritten bullets to the
+    WRONG employer. Alignment must be by name, not position."""
+    master = CVContent.load(EXAMPLE)
+    proposal = master.model_copy(deep=True)
+    for e in proposal.experience:
+        e.bullets = [f"Rewritten for {e.organization}: bullet {i}" for i in range(len(e.bullets))]
+    proposal.experience = list(reversed(proposal.experience))
+    proposal.education = list(reversed(proposal.education))
+
+    result = enforce_invariants(master, proposal)
+    t = result.tailored
+
+    # Master order and facts are kept; each entry got ITS OWN rewritten bullets.
+    for m, out in zip(master.experience, t.experience):
+        assert out.organization == m.organization
+        assert all(b.startswith(f"Rewritten for {m.organization}:") for b in out.bullets)
+    assert [e.institution for e in t.education] == [e.institution for e in master.education]
+    assert any("out of order" in w for w in result.warnings)
+
+
+def test_enforce_invariants_keeps_master_for_unmatched_entries() -> None:
+    """If the model drops an entry entirely, the master entry survives untouched."""
+    master = CVContent.load(EXAMPLE)
+    proposal = master.model_copy(deep=True)
+    dropped = proposal.experience.pop()  # one employer missing from the proposal
+    proposal.experience[0].bullets = ["Rewritten bullet."]
+
+    result = enforce_invariants(master, proposal)
+    t = result.tailored
+
+    assert len(t.experience) == len(master.experience)
+    assert t.experience[-1].bullets == dropped.bullets  # master kept verbatim
+    assert t.experience[0].bullets == ["Rewritten bullet."]
+    assert any("kept master" in w for w in result.warnings)
+
+
 def test_diff_reports_only_changed_text() -> None:
     master = CVContent.load(EXAMPLE)
     result = enforce_invariants(master, _proposal_that_cheats(master))

@@ -51,6 +51,40 @@ def _user_prompt(master: CVContent, *, title: str, company: str, description: st
     )
 
 
+def _norm_key(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _align_entries(master_entries, proposed_entries, key_attr: str, section: str, warnings):
+    """Pair each master entry with its proposed counterpart, or None if unmatched.
+
+    Matches by the entry's identifying key (employer / institution / cert title),
+    NOT by list position: the model sometimes returns entries reordered despite
+    instructions, and positional pairing would attach rewritten bullets to the
+    wrong entry. Entries whose key the model rewrote fall back to position (only
+    safe when the counts line up); anything still unmatched keeps the master.
+    """
+    remaining = list(proposed_entries)
+    aligned = [None] * len(master_entries)
+    for i, m in enumerate(master_entries):
+        key = _norm_key(getattr(m, key_attr))
+        for j, p in enumerate(remaining):
+            if _norm_key(getattr(p, key_attr)) == key:
+                aligned[i] = remaining.pop(j)
+                break
+    if any(
+        a is not None and (i >= len(proposed_entries) or a is not proposed_entries[i])
+        for i, a in enumerate(aligned)
+    ):
+        warnings.append(f"{section} entries returned out of order; realigned to master")
+    if remaining and len(proposed_entries) == len(master_entries):
+        leftovers = iter(remaining)
+        aligned = [a if a is not None else next(leftovers) for a in aligned]
+    elif None in aligned:
+        warnings.append(f"{section} entries changed; kept master where unmatched")
+    return aligned
+
+
 def enforce_invariants(master: CVContent, proposed: CVContent) -> TailorResult:
     """Rebuild a safe CV from the master's facts + the proposal's rewritten text."""
     warnings: list[str] = []
@@ -63,32 +97,39 @@ def enforce_invariants(master: CVContent, proposed: CVContent) -> TailorResult:
 
     # Education: keep facts (institution/dates/degree/modules); take rewritten projects.
     education: list[EducationEntry] = []
-    if len(proposed.education) != len(master.education):
-        warnings.append("education entries changed; kept master")
-        education = list(master.education)
-    else:
-        for m, p in zip(master.education, proposed.education):
+    for m, p in zip(
+        master.education,
+        _align_entries(master.education, proposed.education, "institution", "education", warnings),
+    ):
+        if p is None:
+            education.append(m)
+        else:
             education.append(
                 m.model_copy(update={"projects": _bullets(m.institution, m.projects, p.projects)})
             )
 
     # Certifications: keep title/date; take rewritten bullets.
-    certifications = list(master.certifications)
-    if len(proposed.certifications) == len(master.certifications):
-        certifications = [
-            m.model_copy(update={"bullets": _bullets(m.title, m.bullets, p.bullets)})
-            for m, p in zip(master.certifications, proposed.certifications)
-        ]
-    elif proposed.certifications:
-        warnings.append("certification entries changed; kept master")
+    certifications = [
+        m if p is None else m.model_copy(update={"bullets": _bullets(m.title, m.bullets, p.bullets)})
+        for m, p in zip(
+            master.certifications,
+            _align_entries(
+                master.certifications, proposed.certifications, "title", "certification", warnings
+            ),
+        )
+    ]
 
     # Experience: keep organization/role/dates; take rewritten bullets.
     experience: list[ExperienceEntry] = []
-    if len(proposed.experience) != len(master.experience):
-        warnings.append("experience entries changed; kept master")
-        experience = list(master.experience)
-    else:
-        for m, p in zip(master.experience, proposed.experience):
+    for m, p in zip(
+        master.experience,
+        _align_entries(
+            master.experience, proposed.experience, "organization", "experience", warnings
+        ),
+    ):
+        if p is None:
+            experience.append(m)
+        else:
             experience.append(
                 m.model_copy(update={"bullets": _bullets(m.organization, m.bullets, p.bullets)})
             )
